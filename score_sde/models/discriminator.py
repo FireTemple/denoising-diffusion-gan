@@ -131,11 +131,14 @@ class Discriminator_small(nn.Module):
     self.stddev_feat = 1
     
         
-  def forward(self, x, t, x_t):
+  def forward(self, x, t, x_t, y=None):
     t_embed = self.act(self.t_embed(t))  
     
   
-    input_x = torch.cat((x, x_t), dim = 1)
+    if y is not None:
+       input_x = torch.cat((x, x_t, y), dim = 1)
+    else:   
+       input_x = torch.cat((x, x_t), dim = 1)
     
     h0 = self.start_conv(input_x)
     h1 = self.conv1(h0,t_embed)    
@@ -202,10 +205,13 @@ class Discriminator_large(nn.Module):
     self.stddev_feat = 1
     
         
-  def forward(self, x, t, x_t):
+  def forward(self, x, t, x_t, y=None):
     t_embed = self.act(self.t_embed(t))  
     
-    input_x = torch.cat((x, x_t), dim = 1)
+    if y is not None:
+       input_x = torch.cat((x, x_t, y), dim = 1)
+    else:   
+       input_x = torch.cat((x, x_t), dim = 1)
     
     h = self.start_conv(input_x)
     h = self.conv1(h,t_embed)    

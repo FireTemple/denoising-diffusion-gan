@@ -239,6 +239,7 @@ def train(rank, gpu, args):
       
     
     
+    # 固定写法
     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset,
                                                                     num_replicas=args.world_size,
                                                                     rank=rank)
@@ -250,9 +251,11 @@ def train(rank, gpu, args):
                                                sampler=train_sampler,
                                                drop_last = True)
     
+    # 生成器网络 TODO 看看具体
     netG = NCSNpp(args).to(device)
     
 
+    # 判别器网络，这里我们大概率用large
     if args.dataset == 'cifar10' or args.dataset == 'stackmnist':    
         netD = Discriminator_small(nc = 2*args.num_channels, ngf = args.ngf,
                                t_emb_dim = args.t_emb_dim,
@@ -262,9 +265,11 @@ def train(rank, gpu, args):
                                    t_emb_dim = args.t_emb_dim,
                                    act=nn.LeakyReLU(0.2)).to(device)
     
+    # TODO 看一下做什么的
     broadcast_params(netG.parameters())
     broadcast_params(netD.parameters())
     
+    # Adam优化器
     optimizerD = optim.Adam(netD.parameters(), lr=args.lr_d, betas = (args.beta1, args.beta2))
     
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr_g, betas = (args.beta1, args.beta2))
@@ -277,7 +282,6 @@ def train(rank, gpu, args):
     
     
     
-    #ddp
     netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
     netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
 
@@ -326,6 +330,7 @@ def train(rank, gpu, args):
                 p.requires_grad = True  
         
             
+            # 固定D
             netD.zero_grad()
             
             #sample from p(x_0)
@@ -334,7 +339,10 @@ def train(rank, gpu, args):
             #sample t
             t = torch.randint(0, args.num_timesteps, (real_data.size(0),), device=device)
             
+            # 这里采样得到 x_t 和 x_t+1
             x_t, x_tp1 = q_sample_pairs(coeff, real_data, t)
+
+            # TODO 这里为什么要？
             x_t.requires_grad = True
             
     
@@ -347,6 +355,7 @@ def train(rank, gpu, args):
             errD_real.backward(retain_graph=True)
             
             
+            # TODO lazy_reg?
             if args.lazy_reg is None:
                 grad_real = torch.autograd.grad(
                             outputs=D_real.sum(), inputs=x_t, create_graph=True
@@ -375,6 +384,7 @@ def train(rank, gpu, args):
             latent_z = torch.randn(batch_size, nz, device=device)
             
          
+            # 从 x_t+1 还原到 x_0'
             x_0_predict = netG(x_tp1.detach(), t, latent_z)
             x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
             
@@ -463,7 +473,7 @@ def train(rank, gpu, args):
 def init_processes(rank, size, fn, args):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = args.master_address
-    os.environ['MASTER_PORT'] = '6020'
+    os.environ['MASTER_PORT'] = '6021'
     torch.cuda.set_device(args.local_rank)
     gpu = args.local_rank
     dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=size)

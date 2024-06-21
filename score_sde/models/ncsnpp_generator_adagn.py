@@ -64,10 +64,12 @@ class NCSNpp(nn.Module):
     super().__init__()
     self.config = config
     self.not_use_tanh = config.not_use_tanh
+    # SiLU  Sigmoid，ReLU的升级版
     self.act = act = nn.SiLU()
     self.z_emb_dim = z_emb_dim = config.z_emb_dim
     
-    self.nf = nf = config.num_channels_dae
+    self.nf = nf = config.num_channels_dae # 200
+    # 接受的层数 eg：[1, 2, 2, 2]
     ch_mult = config.ch_mult
     self.num_res_blocks = num_res_blocks = config.num_res_blocks
     self.attn_resolutions = attn_resolutions = config.attn_resolutions
@@ -77,6 +79,7 @@ class NCSNpp(nn.Module):
     self.all_resolutions = all_resolutions = [config.image_size // (2 ** i) for i in range(num_resolutions)]
 
     self.conditional = conditional = config.conditional  # noise-conditional
+
     fir = config.fir
     fir_kernel = config.fir_kernel
     self.skip_rescale = skip_rescale = config.skip_rescale
@@ -102,20 +105,28 @@ class NCSNpp(nn.Module):
       ))
       embed_dim = 2 * nf
 
+    # 默认是positional TODO 这里是做什么的？
     elif embedding_type == 'positional':
       embed_dim = nf
 
     else:
       raise ValueError(f'embedding type {embedding_type} unknown.')
 
+    # 默认为True
     if conditional:
+      # 加入一个线性层 输入embed_dim 输出nf * 4
       modules.append(nn.Linear(embed_dim, nf * 4))
-      modules[-1].weight.data = default_initializer()(modules[-1].weight.shape)
-      nn.init.zeros_(modules[-1].bias)
-      modules.append(nn.Linear(nf * 4, nf * 4))
+      # 初始化权重 TODO 有空看看如何初始化的
       modules[-1].weight.data = default_initializer()(modules[-1].weight.shape)
       nn.init.zeros_(modules[-1].bias)
 
+      # 加入第二个线性层 输入nf * 4 输出nf * 4
+      modules.append(nn.Linear(nf * 4, nf * 4))
+      # 初始化权重
+      modules[-1].weight.data = default_initializer()(modules[-1].weight.shape)
+      nn.init.zeros_(modules[-1].bias)
+
+    # Attation block
     AttnBlock = functools.partial(layerspp.AttnBlockpp,
                                   init_scale=init_scale,
                                   skip_rescale=skip_rescale)
@@ -173,18 +184,25 @@ class NCSNpp(nn.Module):
 
     # Downsampling block
 
-    channels = config.num_channels
+
+    channels = config.num_channels # 3
     if progressive_input != 'none':
       input_pyramid_ch = channels
 
+    # 3.卷积层
     modules.append(conv3x3(channels, nf))
     hs_c = [nf]
 
-    in_ch = nf
+    in_ch = nf # 200
     for i_level in range(num_resolutions):
       # Residual blocks for this resolution
       for i_block in range(num_res_blocks):
-        out_ch = nf * ch_mult[i_level]
+        # 加入num_res_blocks 层残差模块
+        out_ch = nf * ch_mult[i_level] #[1, 2, 2, 4]
+        # (b,200) -> (b, 200)
+        # (b,200) -> (b, 400)
+        # (b,400) -> (b, 400)
+        # (b,400) -> (b, 800)
         modules.append(ResnetBlock(in_ch=in_ch, out_ch=out_ch))
         in_ch = out_ch
 
@@ -277,8 +295,11 @@ class NCSNpp(nn.Module):
     self.z_transform = nn.Sequential(*mapping_layers)
     
 
-  def forward(self, x, time_cond, z):
+  def forward(self, x, time_cond, z, y = None):
     # timestep/noise_level embedding; only for continuous training
+    if y is not None:
+      x = torch.cat([x, y], dim=1)
+      
     zemb = self.z_transform(z)
     modules = self.all_modules
     m_idx = 0
@@ -297,14 +318,18 @@ class NCSNpp(nn.Module):
     else:
       raise ValueError(f'embedding type {self.embedding_type} unknown.')
 
+    # modules[m_idx] 这一层是条件层
     if self.conditional:
+      # 做一次线性变换，把temb 通过条件层映射
       temb = modules[m_idx](temb)
       m_idx += 1
+      # 做二次线性变换，并且通过激活函数引入非线性
       temb = modules[m_idx](self.act(temb))
       m_idx += 1
     else:
       temb = None
 
+    # 数据中心化，让训练更稳定更快速
     if not self.config.centered:
       # If input data is in [0, 1]
       x = 2 * x - 1.
@@ -314,10 +339,13 @@ class NCSNpp(nn.Module):
     if self.progressive_input != 'none':
       input_pyramid = x
 
+    # 卷积层  hs: hidden states (200, 3, 32, 32) -> (200, 200, 32, 32)
     hs = [modules[m_idx](x)]
     m_idx += 1
+    # 这里是UNet的层数设置，比如说[1, 2, 2, 4] 就是4层
     for i_level in range(self.num_resolutions):
       # Residual blocks for this resolution
+      # 默认是2层
       for i_block in range(self.num_res_blocks):
         h = modules[m_idx](hs[-1], temb, zemb)
         m_idx += 1
