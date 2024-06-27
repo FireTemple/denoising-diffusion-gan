@@ -250,7 +250,7 @@ class ResnetBlockBigGANpp_Adagn(nn.Module):
                skip_rescale=True, init_scale=0.):
     super().__init__()
 
-    out_ch =  if out_ch else in_chout_ch
+    out_ch = out_ch if out_ch else in_ch
     self.GroupNorm_0 = AdaptiveGroupNorm(min(in_ch // 4, 32), in_ch, zemb_dim)
     
     self.up = up

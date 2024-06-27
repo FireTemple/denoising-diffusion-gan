@@ -7,6 +7,7 @@
 
 
 import argparse
+import math
 import torch
 import numpy as np
 
@@ -19,6 +20,7 @@ import torchvision
 
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
+from datasets_prep.edges2shoes import Edge2Shoes
 from datasets_prep.lsun import LSUN
 from datasets_prep.stackmnist_data import StackedMNIST, _data_transforms_stacked_mnist
 from datasets_prep.lmdb_datasets import LMDBDataset
@@ -122,6 +124,32 @@ def q_sample_pairs(coeff, x_start, t):
                    extract(coeff.sigmas, t+1, x_start.shape) * noise
     
     return x_t, x_t_plus_one
+
+# TODO A-bridge forward
+def q_sample_pairs_for_a_bridge(x_start, t, y):
+
+    assert y is not None, 'Condition is required for forward diffusion.'
+    T = 1000
+    c_lambda = 2
+    # TODO 移到外面去
+    # t = torch.randint(2, T + 1, (batch_size,), device=x_start.device).long() if t is None else t.long()
+    t_reshaped = t.unsqueeze(1).unsqueeze(2).unsqueeze(3) # BCWH
+    m_t = t_reshaped / T
+    # step2 create noise
+    noise = torch.randn_like(x_start, device=x_start.device)
+
+    B_t = c_lambda * (1 - m_t) * (torch.log(1 / (1 - m_t))) ** 0.5
+
+    B_t = torch.where(torch.eq(t_reshaped, T), torch.zeros_like(B_t), B_t)
+    # print(B_t)
+    x_t = (1 - m_t) * x_start + m_t * y +  B_t * noise
+    # objective = m_t * (y - x_start) + B_t * noise
+    new_noise = torch.randn_like(x_t, device=x_t.device)
+    x_t_plus_one_mean = ((T - t) / (2 * T - t)) * x_t + (T / (2 * T - t)) * y
+    x_t_plus_one_var = c_lambda * (1 - t / T) * math.log((2 * T - t) / T - t)
+
+    x_t_plus_one = x_t_plus_one_mean + x_t_plus_one_var * new_noise
+    return x_t, x_t_plus_one
 #%% posterior sampling
 class Posterior_Coefficients():
     def __init__(self, args, device):
@@ -172,6 +200,54 @@ def sample_posterior(coefficients, x_0,x_t, t):
     
     return sample_x_pos
 
+def sample_posterior_A_bridge(x_0,x_t, t, y):
+    
+    def q_posterior(x_0, x_t, t):
+        T = 1000
+        m_t = t / T
+        c_lambda = 2
+        beta_t = T - t + 1
+        gamma_t = math.log(T / beta_t)
+        C = (1 - 1 / beta_t + 1 / (beta_t * gamma_t))
+        c_xt = (1 / C * (1 + 1 / (T * gamma_t)))
+        c_yt = (1 / C * (1 / beta_t - (t - 1) / (T * beta_t * gamma_t)))
+        c_epst = (1 / C * (1 / (T * gamma_t)))
+        c_zt = (c_lambda / C * (1 - m_t + 1 / T) ** 0.5 * (1 / T) ** 0.5)
+
+        B_t = c_lambda * (1 - m_t) * (torch.log(1 / (1 - m_t))) ** 0.5
+        B_t = torch.where(torch.eq(t, T), torch.zeros_like(B_t), B_t)
+
+        if t == 1:
+            mean = (
+                x_t - (m_t * (y - x_0))
+            )
+            var = 0
+        if t == T:
+            mean = (
+                0.9998552 * x_t + 0.0001447648 * (x_t - (m_t * (y - x_0)))
+            ) 
+            var = 0.0014142 
+        else:    
+            mean = (
+                c_xt * x_t - c_yt * y - c_epst * (m_t * (y - x_0) + B_t)
+            )
+            var = c_zt
+        return mean, var
+    
+  
+    def p_sample(x_0, x_t, t):
+        mean, var = q_posterior(x_0, x_t, t)
+        
+        noise = torch.randn_like(x_t)
+        
+        nonzero_mask = (1 - (t == 1).type(torch.float32))
+
+        return mean - nonzero_mask[:,None,None,None] * var * noise
+            
+    sample_x_pos = p_sample(x_0, x_t, t)
+    
+    return sample_x_pos
+
 def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
     x = x_init
     with torch.no_grad():
@@ -184,6 +260,18 @@ def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
             x_new = sample_posterior(coefficients, x_0, x, t)
             x = x_new.detach()
         
+    return x
+
+def sample_from_model_A_bridge(generator, n_time, x_init, opt, y):
+    x = x_init
+    with torch.no_grad():
+        for i in reversed(range(1 , n_time + 1)):
+            t = torch.full((x.size(0),), i, dtype=torch.int64).to(x.device)
+            t_time = t
+            latent_z = torch.randn(x.size(0), opt.nz, device=x.device)
+            x_0 = generator(x, t_time, latent_z, y)
+            x_new = sample_posterior_A_bridge(x_0, x, t, y)
+            x = x_new.detach()
     return x
 
 #%%
@@ -236,6 +324,16 @@ def train(rank, gpu, args):
                 transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
             ])
         dataset = LMDBDataset(root='/datasets/celeba-lmdb/', name='celeba', train=True, transform=train_transform)
+
+    elif args.dataset == 'edges2shoes':
+        train_transform = transforms.Compose([
+                transforms.Resize(args.image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
+            ])
+        dataset = Edge2Shoes("/mnt/c/Users/Public/Documents/Datasets/edges2shoes", batch_size, 64, device="cuda:0", split="train")
+        dataset_val = Edge2Shoes("/mnt/c/Users/Public/Documents/Datasets/edges2shoes", batch_size, 64, device="cuda:0", split="val")
       
     
     
@@ -250,6 +348,19 @@ def train(rank, gpu, args):
                                                pin_memory=True,
                                                sampler=train_sampler,
                                                drop_last = True)
+    
+
+    # val dataset
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_val,
+                                                                    num_replicas=args.world_size,
+                                                                    rank=rank)
+    data_loader = torch.utils.data.DataLoader(dataset,
+                                               batch_size=batch_size,
+                                               shuffle=False,
+                                               num_workers=4,
+                                               pin_memory=True,
+                                               sampler=train_sampler,
+                                               drop_last = False)
     
     # 生成器网络 TODO 看看具体
     netG = NCSNpp(args).to(device)
@@ -286,6 +397,7 @@ def train(rank, gpu, args):
     netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
 
     
+    # 保存结果
     exp = args.exp
     parent_dir = "./saved_info/dd_gan/{}".format(args.dataset)
 
@@ -329,25 +441,31 @@ def train(rank, gpu, args):
             for p in netD.parameters():  
                 p.requires_grad = True  
         
-            
-            # 固定D
+    
+
+            # 新的循环，梯度清零
             netD.zero_grad()
             
             #sample from p(x_0)
-            real_data = x.to(device, non_blocking=True)
+            real_x = x.to(device, non_blocking=True)
+            real_y = y.to(device, non_blocking=True)
             
-            #sample t
-            t = torch.randint(0, args.num_timesteps, (real_data.size(0),), device=device)
-            
-            # 这里采样得到 x_t 和 x_t+1
-            x_t, x_tp1 = q_sample_pairs(coeff, real_data, t)
+            #sample t TODO 这里注意sample的t应该和a-bridge中的一样记得加判断
+            # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
+            t = torch.randint(2, args.num_timesteps + 1, (real_x.size(0),), device=device).long()
 
-            # TODO 这里为什么要？
+            # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
+            # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
+            x_t, x_tp1 = q_sample_pairs_for_a_bridge(real_x, t, real_y)
+
+            # TODO 这里为什么要？：因为xt在后面座位输入放到了D中
             x_t.requires_grad = True
             
     
             # train with real
-            D_real = netD(x_t, t, x_tp1.detach()).view(-1)
+            # TODO 研究一下具体怎么计算的
+            # D_real = netD(x_t, t, x_tp1.detach()).view(-1)
+            D_real = netD(x_t, t, x_tp1.detach(), y).view(-1)
             
             errD_real = F.softplus(-D_real)
             errD_real = errD_real.mean()
@@ -386,7 +504,9 @@ def train(rank, gpu, args):
          
             # 从 x_t+1 还原到 x_0'
             x_0_predict = netG(x_tp1.detach(), t, latent_z)
-            x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+
+            # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+            x_pos_sample = sample_posterior_A_bridge(pos_coeff, x_0_predict, x_tp1, t)
             
             output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
                 
@@ -407,10 +527,10 @@ def train(rank, gpu, args):
             netG.zero_grad()
             
             
-            t = torch.randint(0, args.num_timesteps, (real_data.size(0),), device=device)
+            t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
             
             
-            x_t, x_tp1 = q_sample_pairs(coeff, real_data, t)
+            x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
                 
             
             latent_z = torch.randn(batch_size, nz,device=device)
@@ -446,8 +566,10 @@ def train(rank, gpu, args):
             if epoch % 10 == 0:
                 torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'xpos_epoch_{}.png'.format(epoch)), normalize=True)
             
-            x_t_1 = torch.randn_like(real_data)
-            fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
+            # x_t_1 = torch.randn_like(real_x)
+            x_t_1 = real_y
+            # fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
+            fake_sample = sample_from_model_A_bridge(netG, args.num_timesteps, x_t_1, args, real_y)
             torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)), normalize=True)
             
             if args.save_content:
