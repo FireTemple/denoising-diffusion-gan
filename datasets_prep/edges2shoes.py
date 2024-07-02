@@ -50,11 +50,9 @@ class Edge2Shoes(data.Dataset):
         """
 
         device = torch.device('cpu') if device is None else device
-        super().__init__(batch_size, device=device, drop_last=drop_last, num_workers=num_workers, shuffle=shuffle)
-
         # initialize
         self.image_size = img_size if isinstance(img_size, tuple) else (img_size, img_size)
-        self.root_dir = os.path.join(path, split.value)
+        self.root_dir = os.path.join(path, split)
 
         # search for images in folder of root_dir
         self.image_paths = [p for p in os.listdir(os.path.join(self.root_dir)) if os.path.isfile(os.path.join(self.root_dir, p))]
@@ -105,4 +103,8 @@ class Edge2Shoes(data.Dataset):
         # normalize condition
         condition = (condition - 0.5) * 2.
         condition.clamp(-1., 1.)
-        return condition, image
+        return image, condition
+
+    def __len__(self):
+        return len(self.image_paths)
+    

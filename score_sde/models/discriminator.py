@@ -169,7 +169,10 @@ class Discriminator_small(nn.Module):
     
     return out
 
-
+# num_channels = 3
+# nc = 6 
+# ngf = 64
+# t_emb_dim = 256
 class Discriminator_large(nn.Module):
   """A time-dependent discriminator for large images (CelebA, LSUN)."""
 
@@ -212,6 +215,7 @@ class Discriminator_large(nn.Module):
        input_x = torch.cat((x, x_t, y), dim = 1)
     else:   
        input_x = torch.cat((x, x_t), dim = 1)
+  
     
     h = self.start_conv(input_x)
     h = self.conv1(h,t_embed)    

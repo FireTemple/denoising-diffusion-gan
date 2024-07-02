@@ -68,7 +68,7 @@ class NCSNpp(nn.Module):
     self.act = act = nn.SiLU()
     self.z_emb_dim = z_emb_dim = config.z_emb_dim
     
-    self.nf = nf = config.num_channels_dae # 200
+    self.nf = nf = config.num_channels_dae # 128
     # 接受的层数 eg：[1, 2, 2, 2]
     ch_mult = config.ch_mult
     self.num_res_blocks = num_res_blocks = config.num_res_blocks
@@ -184,25 +184,29 @@ class NCSNpp(nn.Module):
 
     # Downsampling block
 
-
-    channels = config.num_channels # 3
+    # TODO 这里修改为两倍，因为cat了  
+    channels = config.num_channels * 2 # 3 * 2
     if progressive_input != 'none':
       input_pyramid_ch = channels
 
-    # 3.卷积层
+    # 3.卷积层 
     modules.append(conv3x3(channels, nf))
     hs_c = [nf]
 
-    in_ch = nf # 200
+    in_ch = nf # 128 
+    # num_resolutions = 4
     for i_level in range(num_resolutions):
-      # Residual blocks for this resolution
+      # Residual blocks for this resolution num_res_blocks = 2
       for i_block in range(num_res_blocks):
         # 加入num_res_blocks 层残差模块
+        '''
+        nf = 128
+        第一次 ch_mult[i_level] = 1
+        128 -> 128
+        第一次 ch_mult[i_level] = 2
+        128 -> 516 
+        '''
         out_ch = nf * ch_mult[i_level] #[1, 2, 2, 4]
-        # (b,200) -> (b, 200)
-        # (b,200) -> (b, 400)
-        # (b,400) -> (b, 400)
-        # (b,400) -> (b, 800)
         modules.append(ResnetBlock(in_ch=in_ch, out_ch=out_ch))
         in_ch = out_ch
 
@@ -281,7 +285,8 @@ class NCSNpp(nn.Module):
     if progressive != 'output_skip':
       modules.append(nn.GroupNorm(num_groups=min(in_ch // 4, 32),
                                   num_channels=in_ch, eps=1e-6))
-      modules.append(conv3x3(in_ch, channels, init_scale=init_scale))
+      # TODO 这里固定为3
+      modules.append(conv3x3(in_ch, 3, init_scale=init_scale))
 
     self.all_modules = nn.ModuleList(modules)
     
@@ -302,6 +307,7 @@ class NCSNpp(nn.Module):
       
     zemb = self.z_transform(z)
     modules = self.all_modules
+    # print(modules)
     m_idx = 0
     if self.embedding_type == 'fourier':
       # Gaussian Fourier features embeddings.
@@ -314,16 +320,17 @@ class NCSNpp(nn.Module):
       timesteps = time_cond
      
       temb = layers.get_timestep_embedding(timesteps, self.nf)
-
+      # print("temb shape:")
+      # print(temb.shape) # [batch_size, 128]
     else:
       raise ValueError(f'embedding type {self.embedding_type} unknown.')
 
     # modules[m_idx] 这一层是条件层
     if self.conditional:
-      # 做一次线性变换，把temb 通过条件层映射
-      temb = modules[m_idx](temb)
+      # 做一次线性变换，把temb 通过条件层映射 (0): Linear(in_features=128, out_features=512, bias=True)
+      temb = modules[m_idx](temb) 
       m_idx += 1
-      # 做二次线性变换，并且通过激活函数引入非线性
+      # 做二次线性变换，并且通过激活函数引入非线性 (1): Linear(in_features=512, out_features=512, bias=True)
       temb = modules[m_idx](self.act(temb))
       m_idx += 1
     else:
@@ -339,7 +346,7 @@ class NCSNpp(nn.Module):
     if self.progressive_input != 'none':
       input_pyramid = x
 
-    # 卷积层  hs: hidden states (200, 3, 32, 32) -> (200, 200, 32, 32)
+    # 卷积层  hs: hidden states (200, 3, 64, 64) -> (200, 128, 32, 32)
     hs = [modules[m_idx](x)]
     m_idx += 1
     # 这里是UNet的层数设置，比如说[1, 2, 2, 4] 就是4层
@@ -347,6 +354,7 @@ class NCSNpp(nn.Module):
       # Residual blocks for this resolution
       # 默认是2层
       for i_block in range(self.num_res_blocks):
+        # print(m_idx)
         h = modules[m_idx](hs[-1], temb, zemb)
         m_idx += 1
         if h.shape[-1] in self.attn_resolutions:
@@ -369,6 +377,11 @@ class NCSNpp(nn.Module):
           m_idx += 1
 
         elif self.progressive_input == 'residual':
+          # print(input_pyramid[0])
+          # print("--------")
+          # print(input_pyramid.shape)
+          # print("--------")
+          # print(m_idx)
           input_pyramid = modules[m_idx](input_pyramid)
           m_idx += 1
           if self.skip_rescale:
@@ -451,7 +464,6 @@ class NCSNpp(nn.Module):
       m_idx += 1
 
     assert m_idx == len(modules)
-    
     if not self.not_use_tanh:
 
         return torch.tanh(h)
