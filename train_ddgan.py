@@ -131,6 +131,7 @@ def q_sample_pairs_for_a_bridge(x_start, t_menus_1, y, T):
     assert y is not None, 'Condition is required for forward diffusion.'
     c_lambda = 2
     t = t_menus_1 + 1
+    # print(f"t_menus_1: {t_menus_1}")
     # TODO 移到外面去
     # t = torch.randint(2, T + 1, (batch_size,), device=x_start.device).long() if t is None else t.long()
     t_menus_1 = t_menus_1.unsqueeze(1).unsqueeze(2).unsqueeze(3) # BCWH
@@ -139,13 +140,14 @@ def q_sample_pairs_for_a_bridge(x_start, t_menus_1, y, T):
     # step2 create noise
     noise_xt_menus_1 = torch.randn_like(x_start, device=x_start.device)
 
+    # B_t_menus_1 = c_lambda * (1 - m_t_menus_1) * (torch.log(1 / (1 - m_t_menus_1))) ** 0.5
     B_t_menus_1 = c_lambda * (1 - m_t_menus_1) * (torch.log(1 / (1 - m_t_menus_1))) ** 0.5
 
     # B_t_menus_1 = torch.where(torch.eq(t_menus_1, T), torch.zeros_like(B_t_menus_1), B_t_menus_1)
     B_t_menus_1 = torch.nan_to_num(B_t_menus_1)
 
     x_t_menus_1 = (1 - m_t_menus_1) * x_start + m_t_menus_1 * y +  B_t_menus_1 * noise_xt_menus_1
-    x_t_menus_1 = torch.where(torch.eq(t_menus_1, 0), x_start, x_t_menus_1)
+    # x_t_menus_1 = torch.where(torch.eq(m_t_menus_1, 0), x_start, x_t_menus_1)
     # objective = m_t * (y - x_start) + B_t * noise
     noise_x_t = torch.randn_like(x_t_menus_1, device=x_t_menus_1.device)
 
@@ -153,9 +155,16 @@ def q_sample_pairs_for_a_bridge(x_start, t_menus_1, y, T):
 
     x_t_var = c_lambda * (1 - t / T) * torch.sqrt(torch.log((T - t + 1) / (T - t))) 
     # 当t = T 的时候var = 0
-    x_t_var = torch.where(torch.eq(t, T), torch.zeros_like(x_t_var), x_t_var)
+    x_t_var = torch.nan_to_num(x_t_var)
+
 
     x_t = x_t_mean + x_t_var * noise_x_t
+
+    assert not torch.isnan(B_t_menus_1).any(), "NaN detected in B_t_menus_1"
+    assert not torch.isnan(x_t_menus_1).any(), "NaN detected in x_t_menus_1"
+    assert not torch.isnan(x_t_mean).any(), "NaN detected in x_t_mean"
+    assert not torch.isnan(x_t_var).any(), "NaN detected in x_t_var"
+    assert not torch.isnan(x_t).any(), "NaN detected in x_t"
     # print(x_t_menus_1)
     return x_t_menus_1, x_t
 #%% posterior sampling
@@ -223,6 +232,11 @@ def sample_posterior_A_bridge(x_0, x_t, t_menus_1, y, T):
         c_epst = (1 / C * (1 / (T * gamma_t)))
         c_zt = (c_lambda / C * (1 - m_t + 1 / T) ** 0.5 * (1 / T) ** 0.5)
  
+        C = torch.nan_to_num(C)
+        c_xt = torch.nan_to_num(c_xt)
+        c_yt = torch.nan_to_num(c_yt)
+        c_epst = torch.nan_to_num(c_epst)
+        c_zt = torch.nan_to_num(c_zt)
         # B_t = c_lambda * (1 - m_t) * (torch.log(1 / (1 - m_t))) ** 0.5
         # B_t = torch.where(t == T, torch.zeros_like(B_t), B_t)
 
@@ -232,11 +246,11 @@ def sample_posterior_A_bridge(x_0, x_t, t_menus_1, y, T):
         var = c_zt
         # print("before")
         # print(mean)
+
         mean = torch.nan_to_num(mean)
         mean = torch.where(t == 1, x_t - (m_t * (y - x_0)), mean)
         var = torch.where(t == 1, torch.zeros_like(var), var)
         # print("after")
-        # print(mean)
         # mean = torch.where(t == T, 0.9998552 * x_t + 0.0001447648 * (x_t - (m_t * (y - x_0))), mean)
         # var = torch.where(t == T, 0.0014142 , var)
 
@@ -273,6 +287,13 @@ def sample_posterior_A_bridge(x_0, x_t, t_menus_1, y, T):
     sample_x_pos = p_sample(x_0, x_t, t_menus_1 + 1)
     # print(sample_x_pos)
     return sample_x_pos
+
+def weights_init(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.xavier_normal_(m.weight.data)
+    elif isinstance(m, nn.BatchNorm2d):
+        m.weight.data.fill_(1.0)
+        m.bias.data.zero_()               
 
 def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
     x = x_init
@@ -406,8 +427,8 @@ def train(rank, gpu, args):
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr_g, betas = (args.beta1, args.beta2))
     
     # TODO testing
-    torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
-    torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
+    # torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
+    # torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
 
 
     if args.use_ema:
@@ -421,6 +442,9 @@ def train(rank, gpu, args):
     netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
     netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
 
+    # # TODO testing
+    # netG.apply(weights_init)
+    # netD.apply(weights_init)
     
     # 保存结果
     exp = args.exp
@@ -466,11 +490,13 @@ def train(rank, gpu, args):
         #     if param.grad is not None:
         #         # print(f"Generator gradient {name}: {param.grad.norm()}")
         #         print(f"Generator gradient {name}: {param.grad.norm()} iteration: {iteration}")
-       
+
         for iteration, (x, y) in enumerate(data_loader):
             for p in netD.parameters():  
                 p.requires_grad = True  
-        
+
+            assert not torch.isnan(x).any(), "NaN detected in input data"
+            assert not torch.isnan(y).any(), "NaN detected in target data"
             # print(f'iteration: {iteration} =============================')
             # print(f'x shape: {x.shape} =============================')
 
@@ -483,7 +509,8 @@ def train(rank, gpu, args):
             
             #sample t TODO 这里注意sample的t应该和a-bridge中的一样记得加判断
             # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
-            t_menus_1 = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device).long()
+            starting_index = 0
+            t_menus_1 = torch.randint(starting_index, args.num_timesteps, (real_x.size(0),), device=device).long()
 
             # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
             # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
@@ -509,7 +536,7 @@ def train(rank, gpu, args):
             
             errD_real = F.softplus(-D_real)
             errD_real = errD_real.mean()
-            
+            assert not torch.isnan(errD_real).any(), "NaN detected in discriminator real loss value"
             errD_real.backward(retain_graph=True)
             
             
@@ -540,7 +567,6 @@ def train(rank, gpu, args):
 
             # train with fake
             latent_z = torch.randn(batch_size, nz, device=device)
-            
          
             # 从 x_t+1 还原到 x_0'
             # print(x_t)
@@ -575,13 +601,19 @@ def train(rank, gpu, args):
             
             errD_fake = F.softplus(output)
             errD_fake = errD_fake.mean()
+            assert not torch.isnan(errD_fake).any(), "NaN detected in discriminator fake loss value"
             errD_fake.backward()
     
             
             errD = errD_real + errD_fake
+            torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
             # Update D
             optimizerD.step()
-            
+
+            # for name, param in netD.named_parameters():
+            #     if param.grad is not None:
+            #         # print(f"Generator gradient {name}: {param.grad.norm()}")
+            #         print(f"D gradient {name}  update: {param.grad.norm()} iteration: {iteration}, epoch: {epoch}")            
         
             #update G
             for p in netD.parameters():
@@ -589,42 +621,49 @@ def train(rank, gpu, args):
             netG.zero_grad()
             
             
+            # t_menus_1 = torch.randint(0, 3, (real_x.size(0),), device=device)
             t_menus_1 = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
             
             
             # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
             x_t_menus_1, x_t = q_sample_pairs_for_a_bridge(real_x, t_menus_1, real_y, args.num_timesteps)
-            
+            assert not torch.isnan(t_menus_1).any(), "NaN detected in t_menus_1"
+            assert not torch.isnan(x_t).any(), "NaN detected in x_t: {x_t}"
             
             latent_z = torch.randn(batch_size, nz,device=device)
             
             
                 
            
-            x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y)
+            x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y.detach())
             # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
             x_pos_sample = sample_posterior_A_bridge(x_0_predict, x_t, t_menus_1, real_y, args.num_timesteps)
-            
+            assert not torch.isnan(x_pos_sample).any(), "NaN detected in x_pos_sample"
+
+
             output = netD(x_pos_sample, t_menus_1, x_t.detach(), real_y).view(-1)
-            
+            # print(f"netD output: {output}")
             
             errG = F.softplus(-output)
+            # print(f"Softplus output: {errG}")
             errG = errG.mean()
-            
-            for name, param in netG.named_parameters():
-                if param.grad is not None:
-                    # print(f"Generator gradient {name}: {param.grad.norm()}")
-                    print(f"Generator gradient {name} before update: {param.grad.norm()} iteration: {iteration}, epoch: {epoch}")
+            assert not torch.isnan(errG).any(), "NaN detected in generator loss value"
 
-
+            # print(f"Loss value before backward: {errG.item()}")
+            torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
             errG.backward()
-            optimizerG.step()
 
-            for name, param in netG.named_parameters():
-                if param.grad is not None:
-                    print(f"{name} grad norm: {param.grad.norm()}")
-                    if torch.isnan(param.grad).any():
-                        raise ValueError(f"NaN detected in gradient of {name}")
+            # for name, param in netG.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"Generator gradient {name} before update: {param.grad.norm()}")
+            #         if torch.isnan(param.grad).any():
+            #             raise ValueError(f"NaN detected in gradient of {name}")
+            
+
+
+            
+            torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
+            optimizerG.step()
             
             global_step += 1
             if iteration % 100 == 0:
@@ -808,5 +847,3 @@ if __name__ == '__main__':
         print('starting in debug mode')
         
         init_processes(0, size, train, args)
-   
-                
