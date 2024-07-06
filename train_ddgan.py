@@ -404,7 +404,7 @@ def train(rank, gpu, args):
     # 判别器网络，这里我们大概率用large
     # TODO changed to 3
     if args.dataset == 'cifar10' or args.dataset == 'stackmnist' or args.dataset == 'edges2shoes':    
-        netD = Discriminator_small(nc = 3*args.num_channels, ngf = args.ngf,
+        netD = Discriminator_small(nc = 2*args.num_channels, ngf = args.ngf,
                                t_emb_dim = args.t_emb_dim,
                                act=nn.LeakyReLU(0.2)).to(device)
     else:
@@ -413,7 +413,7 @@ def train(rank, gpu, args):
         # ngf = 64
         # t_emb_dim = 256
         # TODO changed to 3
-        netD = Discriminator_large(nc = 3*args.num_channels, ngf = args.ngf, 
+        netD = Discriminator_large(nc = 2*args.num_channels, ngf = args.ngf, 
                                    t_emb_dim = args.t_emb_dim,
                                    act=nn.LeakyReLU(0.2)).to(device)
     
@@ -426,9 +426,6 @@ def train(rank, gpu, args):
     
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr_g, betas = (args.beta1, args.beta2))
     
-    # TODO testing
-    # torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
-    # torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
 
 
     if args.use_ema:
@@ -442,9 +439,6 @@ def train(rank, gpu, args):
     netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
     netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
 
-    # # TODO testing
-    # netG.apply(weights_init)
-    # netD.apply(weights_init)
     
     # 保存结果
     exp = args.exp
@@ -504,35 +498,20 @@ def train(rank, gpu, args):
             netD.zero_grad()
             
             #sample from p(x_0)
-            real_x = x.to(device, non_blocking=True)
-            real_y = y.to(device, non_blocking=True)
+            real_data = x.to(device, non_blocking=True)
             
-            #sample t TODO 这里注意sample的t应该和a-bridge中的一样记得加判断
-            # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
-            starting_index = 0
-            t_menus_1 = torch.randint(starting_index, args.num_timesteps, (real_x.size(0),), device=device).long()
+            t = torch.randint(0, args.num_timesteps, (real_data.size(0),), device=device)
 
             # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
-            # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
-            
-            x_t_menus_1, x_t = q_sample_pairs_for_a_bridge(real_x, t_menus_1, real_y, args.num_timesteps)
-            # print("forward:")
-            # print("t_menus_1")
-            # print(x_t)
-            # print("x_t")
-            # print(x_t)
-            # print("x_tp1")
-            # print(x_tp1)
-            # print("===================")
+            x_t, x_tp1 = q_sample_pairs(coeff, real_data, t)
 
             # TODO 这里为什么要？：因为xt在后面座位输入放到了D中
-            x_t_menus_1.requires_grad = True
+            x_t.requires_grad = True
             
     
             # train with real
             # TODO 研究一下具体怎么计算的
-            # D_real = netD(x_t, t, x_tp1.detach()).view(-1)
-            D_real = netD(x_t_menus_1, t_menus_1, x_t.detach(), real_y).view(-1)
+            D_real = netD(x_t, t, x_tp1.detach()).view(-1)
             
             errD_real = F.softplus(-D_real)
             errD_real = errD_real.mean()
@@ -543,7 +522,7 @@ def train(rank, gpu, args):
             # TODO lazy_reg?
             if args.lazy_reg is None:
                 grad_real = torch.autograd.grad(
-                            outputs=D_real.sum(), inputs=x_t_menus_1, create_graph=True
+                            outputs=D_real.sum(), inputs=x_t, create_graph=True
                             )[0]
                 grad_penalty = (
                                 grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
@@ -555,7 +534,7 @@ def train(rank, gpu, args):
             else:
                 if global_step % args.lazy_reg == 0:
                     grad_real = torch.autograd.grad(
-                            outputs=D_real.sum(), inputs=x_t_menus_1, create_graph=True
+                            outputs=D_real.sum(), inputs=x_t, create_graph=True
                             )[0]
                     grad_penalty = (
                                 grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
@@ -568,37 +547,10 @@ def train(rank, gpu, args):
             # train with fake
             latent_z = torch.randn(batch_size, nz, device=device)
          
-            # 从 x_t+1 还原到 x_0'
-            # print(x_t)
-            assert not torch.isnan(x_t).any(), "NaN detected in real_data"
-            assert not torch.isnan(real_y).any(), "NaN detected in fake_data"
 
-            x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y)
-            if torch.isnan(x_0_predict).any():
-                print("NaN detected in Generator output")
-                print(f"iteration: {iteration}")
-
-            # for name, param in netG.named_parameters():
-            #     if param.grad is not None:
-            #         print(f"Generator gradient {name}: {param.grad.norm()}")
-        
-            # for name, param in netG.named_parameters():
-            #     if torch.isnan(param).any():
-            #         print(f"NaN detected in Generator parameter {name}")    
-            # print(x_0_predict[0])
-            # print(x_t[0])
-            # print(t_menus_1[0])
-            # print(real_y[0])
-            # print(latent_z[0])
-            # print("===============")
-            # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
-            x_pos_sample = sample_posterior_A_bridge(x_0_predict, x_t, t_menus_1, real_y, args.num_timesteps)
-            if torch.isnan(x_pos_sample).any():
-                print("NaN detected in sample_posterior_A_bridge")
-            output = netD(x_pos_sample, t_menus_1, x_t.detach(), real_y).view(-1)
-            if torch.isnan(output).any():
-                print("NaN detected in D")   
-            
+            x_0_predict = netG(x_tp1.detach(), t, latent_z)
+            x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+            output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
             errD_fake = F.softplus(output)
             errD_fake = errD_fake.mean()
             assert not torch.isnan(errD_fake).any(), "NaN detected in discriminator fake loss value"
@@ -606,15 +558,9 @@ def train(rank, gpu, args):
     
             
             errD = errD_real + errD_fake
-            torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
             # Update D
             optimizerD.step()
-
-            # for name, param in netD.named_parameters():
-            #     if param.grad is not None:
-            #         # print(f"Generator gradient {name}: {param.grad.norm()}")
-            #         print(f"D gradient {name}  update: {param.grad.norm()} iteration: {iteration}, epoch: {epoch}")            
-        
+     
             #update G
             for p in netD.parameters():
                 p.requires_grad = False
@@ -622,26 +568,21 @@ def train(rank, gpu, args):
             
             
             # t_menus_1 = torch.randint(0, 3, (real_x.size(0),), device=device)
-            t_menus_1 = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
+            t = torch.randint(0, args.num_timesteps, (real_data.size(0),), device=device)
             
             
-            # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
-            x_t_menus_1, x_t = q_sample_pairs_for_a_bridge(real_x, t_menus_1, real_y, args.num_timesteps)
-            assert not torch.isnan(t_menus_1).any(), "NaN detected in t_menus_1"
-            assert not torch.isnan(x_t).any(), "NaN detected in x_t: {x_t}"
+            x_t, x_tp1 = q_sample_pairs(coeff, real_data, t)
             
             latent_z = torch.randn(batch_size, nz,device=device)
             
             
                 
            
-            x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y.detach())
-            # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
-            x_pos_sample = sample_posterior_A_bridge(x_0_predict, x_t, t_menus_1, real_y, args.num_timesteps)
-            assert not torch.isnan(x_pos_sample).any(), "NaN detected in x_pos_sample"
+            x_0_predict = netG(x_tp1.detach(), t, latent_z)
+            x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
 
 
-            output = netD(x_pos_sample, t_menus_1, x_t.detach(), real_y).view(-1)
+            output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
             # print(f"netD output: {output}")
             
             errG = F.softplus(-output)
@@ -678,15 +619,11 @@ def train(rank, gpu, args):
         if rank == 0:
             if epoch % 10 == 0:
                 torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'xpos_epoch_{}.png'.format(epoch)), normalize=True)
+                torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_predict_epoch_{}.png'.format(epoch)), normalize=True)
             
-            # x_t_1 = torch.randn_like(real_x)
-            x_T = real_y
-            gt = real_x
-            # fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
-            fake_sample = sample_from_model_A_bridge(netG, args.num_timesteps, x_T, args, real_y)
+            x_t_1 = torch.randn_like(real_data)
+            fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
             torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)), normalize=True)
-            torchvision.utils.save_image(x_T, os.path.join(exp_path, 'input_epoch_{}.png'.format(epoch)), normalize=True)
-            torchvision.utils.save_image(gt, os.path.join(exp_path, 'gt_epoch_{}.png'.format(epoch)), normalize=True)
             
             if args.save_content:
                 if epoch % args.save_content_every == 0:

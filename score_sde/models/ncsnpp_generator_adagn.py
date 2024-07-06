@@ -185,7 +185,7 @@ class NCSNpp(nn.Module):
     # Downsampling block
 
     # TODO 这里修改为两倍，因为cat了  
-    channels = config.num_channels * 2 # 3 * 2
+    channels = config.num_channels # 3 * 2
     if progressive_input != 'none':
       input_pyramid_ch = channels
 
