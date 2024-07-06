@@ -21,6 +21,7 @@ class EMA(Optimizer):
         self.optimizer = opt
         self.state = opt.state
         self.param_groups = opt.param_groups
+        self.defaults = opt.defaults
 
     def step(self, *args, **kwargs):
         retval = self.optimizer.step(*args, **kwargs)
@@ -67,6 +68,7 @@ class EMA(Optimizer):
         # the underlying optimizer too.
         self.optimizer.state = self.state
         self.optimizer.param_groups = self.param_groups
+        self.optimizer.defaults = self.defaults
 
     def swap_parameters_with_ema(self, store_params_in_ema):
         """ This function swaps parameters with their ema values. It records original parameters in the ema

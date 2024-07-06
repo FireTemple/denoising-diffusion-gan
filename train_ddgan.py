@@ -280,9 +280,8 @@ def sample_posterior_A_bridge(x_0, x_t, t_menus_1, y, T):
         mean, var = q_posterior(x_0, x_t, t, y)
         noise = torch.randn_like(x_t)
         
-        nonzero_mask = (1 - (t == 1).type(torch.float32))
-        
-        return mean - nonzero_mask[:, None, None, None] * var * noise
+        x_t_menes_1 = mean + var * noise        
+        return x_t_menes_1
     
     sample_x_pos = p_sample(x_0, x_t, t_menus_1 + 1)
     # print(sample_x_pos)
@@ -317,7 +316,7 @@ def sample_from_model_A_bridge(generator, n_time, x_init, opt, y):
             t_time = t
             latent_z = torch.randn(x.size(0), opt.nz, device=x.device)
             x_0 = generator(x, t_time, latent_z, y)
-            x_new = sample_posterior_A_bridge(x_0, x, t, y, args.num_timesteps)
+            x_new = sample_posterior_A_bridge(x_0, x, t - 1, y, args.num_timesteps)
             x = x_new.detach()
     return x
 
@@ -463,6 +462,7 @@ def train(rank, gpu, args):
     T = get_time_schedule(args, device)
     
     if args.resume:
+        print("resume")
         checkpoint_file = os.path.join(exp_path, 'content.pth')
         checkpoint = torch.load(checkpoint_file, map_location=device)
         init_epoch = checkpoint['epoch']
@@ -678,6 +678,7 @@ def train(rank, gpu, args):
         if rank == 0:
             if epoch % 10 == 0:
                 torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'xpos_epoch_{}.png'.format(epoch)), normalize=True)
+                torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_reconstr{}.png'.format(epoch)), normalize=True)
             
             # x_t_1 = torch.randn_like(real_x)
             x_T = real_y
@@ -685,8 +686,8 @@ def train(rank, gpu, args):
             # fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
             fake_sample = sample_from_model_A_bridge(netG, args.num_timesteps, x_T, args, real_y)
             torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)), normalize=True)
-            torchvision.utils.save_image(x_T, os.path.join(exp_path, 'input_epoch_{}.png'.format(epoch)), normalize=True)
-            torchvision.utils.save_image(gt, os.path.join(exp_path, 'gt_epoch_{}.png'.format(epoch)), normalize=True)
+            # torchvision.utils.save_image(x_T, os.path.join(exp_path, 'input_epoch_{}.png'.format(epoch)), normalize=True)
+            # torchvision.utils.save_image(gt, os.path.join(exp_path, 'gt_epoch_{}.png'.format(epoch)), normalize=True)
             
             if args.save_content:
                 if epoch % args.save_content_every == 0:
