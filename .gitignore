@@ -44,3 +44,6 @@ Thumbs.db
 *.mov
 *.wmv
 
+/data/*
+/saved_info/*
+
