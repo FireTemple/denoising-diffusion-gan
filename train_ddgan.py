@@ -482,7 +482,7 @@ def train(rank, gpu, args):
 
         # for name, param in netG.named_parameters():
         #     if param.grad is not None:
-        #         # print(f"Generator gradient {name}: {param.grad.norm()}")
+        #         # print(f"sGenerator gradient {name}: {param.grad.norm()}")
         #         print(f"Generator gradient {name}: {param.grad.norm()} iteration: {iteration}")
 
         for iteration, (x, y) in enumerate(data_loader):
