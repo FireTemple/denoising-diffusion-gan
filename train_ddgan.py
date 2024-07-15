@@ -488,7 +488,7 @@ def train(rank, gpu, args):
     print(args)
     
 
-    # 判别器网络，这里我们大概率用large
+    # 判别器网络，这里我们大概率用largea
     # TODO changed to 3
     netD = Discriminator_small(nc = 2*args.num_channels, ngf = args.ngf,
                             t_emb_dim = args.t_emb_dim,
