@@ -412,7 +412,7 @@ def train(rank, gpu, args):
         # nc = 6 
         # ngf = 64
         # t_emb_dim = 256
-        # TODO changed to 3
+        # TODO changed to 3323123123123
         netD = Discriminator_large(nc = 2*args.num_channels, ngf = args.ngf, 
                                    t_emb_dim = args.t_emb_dim,
                                    act=nn.LeakyReLU(0.2)).to(device)
