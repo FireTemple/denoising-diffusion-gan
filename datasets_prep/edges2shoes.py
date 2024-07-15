@@ -59,7 +59,7 @@ class Edge2Shoes(data.Dataset):
         self.image_paths *= repeat
 
         # TODO
-        # self.image_paths = self.image_paths[:5000]
+        self.image_paths = self.image_paths[:2000]
 
         # initialize transforms
         transforms_list: list[Callable[..., tuple[Any, Any]]] = [transforms.RandomHorizontalFlip(p=0)] if split == Edge2ShoesSplit.TRAIN else []

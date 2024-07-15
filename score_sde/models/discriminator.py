@@ -134,10 +134,9 @@ class Discriminator_small(nn.Module):
   def forward(self, x, t, x_t, y=None):
     t_embed = self.act(self.t_embed(t))  
     
-  
     if y is not None:
        input_x = torch.cat((x, x_t, y), dim = 1)
-    else:   
+    else:
        input_x = torch.cat((x, x_t), dim = 1)
     
     h0 = self.start_conv(input_x)
