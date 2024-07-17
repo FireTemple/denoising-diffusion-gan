@@ -125,67 +125,27 @@ def q_sample_pairs(coeff, x_start, t):
     
     return x_t, x_t_plus_one
 
-# TODO A-bridge forward
-# def q_sample_pairs_for_a_bridge(x_start, t_menus_1, y, T):
-
-#     assert y is not None, 'Condition is required for forward diffusion.'
-#     c_lambda = 2
-#     t = t_menus_1 + 1
-#     # print(f"t_menus_1: {t_menus_1}")
-#     # TODO 移到外面去
-#     # t = torch.randint(2, T + 1, (batch_size,), device=x_start.device).long() if t is None else t.long()
-#     t_menus_1 = t_menus_1.unsqueeze(1).unsqueeze(2).unsqueeze(3) # BCWH
-#     t = t.unsqueeze(1).unsqueeze(2).unsqueeze(3) # BCWH
-#     m_t_menus_1 = t_menus_1 / T
-#     # step2 create noise
-#     noise_xt_menus_1 = torch.randn_like(x_start, device=x_start.device)
-
-#     # B_t_menus_1 = c_lambda * (1 - m_t_menus_1) * (torch.log(1 / (1 - m_t_menus_1))) ** 0.5
-#     B_t_menus_1 = c_lambda * (1 - m_t_menus_1) * (torch.log(1 / (1 - m_t_menus_1))) ** 0.5
-
-#     # B_t_menus_1 = torch.where(torch.eq(t_menus_1, T), torch.zeros_like(B_t_menus_1), B_t_menus_1)
-#     B_t_menus_1 = torch.nan_to_num(B_t_menus_1)
-
-#     x_t_menus_1 = (1 - m_t_menus_1) * x_start + m_t_menus_1 * y +  B_t_menus_1 * noise_xt_menus_1
-#     # x_t_menus_1 = torch.where(torch.eq(m_t_menus_1, 0), x_start, x_t_menus_1)
-#     # objective = m_t * (y - x_start) + B_t * noise
-#     noise_x_t = torch.randn_like(x_t_menus_1, device=x_t_menus_1.device)
-
-#     x_t_mean = ((T - t) / (T - t + 1)) * x_t_menus_1 + (1 / (T - t + 1)) * y
-
-#     x_t_var = c_lambda * (1 - t / T) * torch.sqrt(torch.log((T - t + 1) / (T - t))) 
-#     # 当t = T 的时候var = 0
-#     x_t_var = torch.nan_to_num(x_t_var)
-
-
-#     x_t = x_t_mean + x_t_var * noise_x_t
-
-#     assert not torch.isnan(B_t_menus_1).any(), "NaN detected in B_t_menus_1"
-#     assert not torch.isnan(x_t_menus_1).any(), "NaN detected in x_t_menus_1"
-#     assert not torch.isnan(x_t_mean).any(), "NaN detected in x_t_mean"
-#     assert not torch.isnan(x_t_var).any(), "NaN detected in x_t_var"
-#     assert not torch.isnan(x_t).any(), "NaN detected in x_t"
-#     # print(x_t_menus_1)
-#     return x_t_menus_1, x_t
-
-def q_sample_BBDM(x_start, y, t_menus_1, T, noise=None):
-    t_menus_1 = t_menus_1.unsqueeze(1).unsqueeze(2).unsqueeze(3)
-    m_t_menus_1 = t_menus_1 / T
-    delta_t_menus_1 = 2 * (m_t_menus_1 - m_t_menus_1 ** 2)
-    noise = torch.rand_like(x_start, device=x_start.device)
-    x_t_menus_1 = (1 - m_t_menus_1) * x_start + m_t_menus_1 * y + delta_t_menus_1 ** 0.5 * noise
-    return x_t_menus_1, m_t_menus_1, delta_t_menus_1
-
-def q_sample_pairs_for_BBDM(x_start, t_menus_1, y, T):
-    assert y is not None, 'Condition is required for forward diffusion.'
-    x_t_menus_1, m_t_menus_1, delta_t_menus_1 = q_sample_BBDM(x_start, y, t_menus_1, T)
-    t = t_menus_1 + 1
+def q_sample_BBDM(x_start, y, t, T, noise=None):
     t = t.unsqueeze(1).unsqueeze(2).unsqueeze(3)
     m_t = t / T
-    delta_t = 2 * (m_t - m_t** 2)
+    delta_t = 2 * (m_t - m_t ** 2)
     noise = torch.rand_like(x_start, device=x_start.device)
-    x_t = ((1 - m_t) / (1 - m_t_menus_1)) * x_t_menus_1 + (m_t - ((1 - m_t) / (1 - m_t_menus_1))) * y + (delta_t - delta_t_menus_1 * ((1 - m_t) ** 2 / (1 - m_t_menus_1) ** 2)) * noise
-    return x_t_menus_1, x_t
+    x_t = (1 - m_t) * x_start + m_t * y + delta_t ** 0.5 * noise
+    return x_t, m_t, delta_t
+
+def q_sample_pairs_for_BBDM(x_start, t, y, T):
+    assert y is not None, 'Condition is required for forward diffusion.'
+    x_t, m_t, delta_t = q_sample_BBDM(x_start, y, t, T)
+    tp1 = t + 1
+    tp1 = tp1.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+    m_tp1 = tp1 / T
+    delta_tp1 = 2 * (m_tp1 - m_tp1** 2)
+    noise = torch.rand_like(x_start, device=x_start.device)
+    delta_tp1_given_t = delta_tp1 - delta_t * ((1 - m_tp1) ** 2 / (1 - m_t) ** 2)
+    c_x = (1 - m_tp1) / (1 - m_t)
+    c_y = m_tp1 - m_t * ((1 - m_tp1) / (1 - m_t))
+    x_tp1 = c_x * x_t + c_y * y + delta_tp1_given_t ** 0.5 * noise
+    return x_t, x_tp1
 
 
 #%% posterior sampling
@@ -270,88 +230,18 @@ def sample_posterior_BBDM(x_0,x_t, y, t, T):
         return mean, var
     
   
-    def p_sample_BBDM(x_0, x_t, t):
+    def p_sample_BBDM(x_0, x_t, t, y, T):
         mean, var = q_posterior_BBDM(x_0, x_t, y, t, T)
         
         noise = torch.randn_like(x_t)
         
         nonzero_mask = (1 - (t == 1).type(torch.float32))
 
-        return mean + nonzero_mask[:,None,None,None] * torch.exp(0.5 * var) * noise
+        return mean + nonzero_mask[:,None,None,None] * 0.5 ** var * noise
             
-    sample_x_pos = p_sample_BBDM(x_0, x_t, t)
+    sample_x_pos = p_sample_BBDM(x_0, x_t, t, y, T)
     
     return sample_x_pos
-
-# def sample_posterior_A_bridge(x_0, x_t, t_menus_1, y, T):
-        
-#     def q_posterior(x_0, x_t, t, y):
-#         # print(x_0)
-#         t = t.unsqueeze(1).unsqueeze(2).unsqueeze(3) # BCWH
-#         m_t = t / T
-#         c_lambda = 2
-#         beta_t = T - t + 1
-#         gamma_t = torch.log(T / beta_t)
-#         C = (1 - 1 / beta_t + 1 / (beta_t * gamma_t))
-#         c_xt = (1 / C * (1 + 1 / (T * gamma_t)))
-#         c_yt = (1 / C * (1 / beta_t - (t - 1) / (T * beta_t * gamma_t)))
-#         c_epst = (1 / C * (1 / (T * gamma_t)))
-#         c_zt = (c_lambda / C * (1 - m_t + 1 / T) ** 0.5 * (1 / T) ** 0.5)
- 
-#         C = torch.nan_to_num(C)
-#         c_xt = torch.nan_to_num(c_xt)
-#         c_yt = torch.nan_to_num(c_yt)
-#         c_epst = torch.nan_to_num(c_epst)
-#         c_zt = torch.nan_to_num(c_zt)
-#         # B_t = c_lambda * (1 - m_t) * (torch.log(1 / (1 - m_t))) ** 0.5
-#         # B_t = torch.where(t == T, torch.zeros_like(B_t), B_t)
-
-#         mean = (
-#             (c_xt - c_epst) * x_t + c_epst * x_0 - c_yt * y
-#         )
-#         var = c_zt
-#         # print("before")
-#         # print(mean)
-
-#         mean = torch.nan_to_num(mean)
-#         mean = torch.where(t == 1, x_t - (m_t * (y - x_0)), mean)
-#         var = torch.where(t == 1, torch.zeros_like(var), var)
-#         # print("after")
-#         # mean = torch.where(t == T, 0.9998552 * x_t + 0.0001447648 * (x_t - (m_t * (y - x_0))), mean)
-#         # var = torch.where(t == T, 0.0014142 , var)
-
-#         # if t == 1:
-#         #     mean = (
-#         #         x_t - (m_t * (y - x_0))
-#         #     )
-#         #     var = 0
-#         # if t == T:
-#         #     mean = (
-#         #         0.9998552 * x_t + 0.0001447648 * (x_t - (m_t * (y - x_0)))
-#         #     ) 
-#         #     var = 0.0014142 
-#         # else:    
-#         #     mean = (
-#         #         c_xt * x_t - c_yt * y - c_epst * (m_t * (y - x_0) + B_t)
-#         #     )
-#         #     var = c_zt
-
-#         return mean, var
-    
-    
-  
-        
-  
-#     def p_sample(x_0, x_t, t):
-#         mean, var = q_posterior(x_0, x_t, t, y)
-#         noise = torch.randn_like(x_t)
-        
-#         x_t_menes_1 = mean + var * noise        
-#         return x_t_menes_1
-    
-#     sample_x_pos = p_sample(x_0, x_t, t_menus_1 + 1)
-#     # print(sample_x_pos)
-#     return sample_x_pos
 
 def weights_init(m):
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
@@ -373,18 +263,6 @@ def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
             x = x_new.detach()
         
     return x
-
-# def sample_from_model_A_bridge(generator, n_time, x_init, opt, y):
-#     x = x_init
-#     with torch.no_grad():
-#         for i in reversed(range(1 , n_time + 1)):
-#             t = torch.full((x.size(0),), i, dtype=torch.int64).to(x.device)
-#             t_time = t
-#             latent_z = torch.randn(x.size(0), opt.nz, device=x.device)
-#             x_0 = generator(x, t_time, latent_z, y)
-#             x_new = sample_posterior_A_bridge(x_0, x, t - 1, y, args.num_timesteps)
-#             x = x_new.detach()
-#     return x
 
 def sample_from_model_BBDM(generator, n_time, x_init, opt, y):
     x = x_init
@@ -505,10 +383,6 @@ def train(rank, gpu, args):
     optimizerD = optim.Adam(netD.parameters(), lr=args.lr_d, betas = (args.beta1, args.beta2))
     
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr_g, betas = (args.beta1, args.beta2))
-    
-    # TODO testing
-    # torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
-    # torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
 
 
     if args.use_ema:
@@ -522,10 +396,7 @@ def train(rank, gpu, args):
     netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
     netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
 
-    # # TODO testing
-    # netG.apply(weights_init)
-    # netD.apply(weights_init)
-    
+  
     # 保存结果
     exp = args.exp
     parent_dir = "./saved_info/dd_gan/{}".format(args.dataset)
@@ -536,11 +407,6 @@ def train(rank, gpu, args):
             os.makedirs(exp_path)
             copy_source(__file__, exp_path)
             shutil.copytree('score_sde/models', os.path.join(exp_path, 'score_sde/models'))
-    
-    
-    coeff = Diffusion_Coefficients(args, device)
-    pos_coeff = Posterior_Coefficients(args, device)
-    T = get_time_schedule(args, device)
     
     if args.resume:
         print("resume")
@@ -583,7 +449,7 @@ def train(rank, gpu, args):
             starting_index = 0
 
             # 初始化 避免resume的时候errD没有被计算
-            errD = torch.tensor([0.], dtype=torch.float32,device=device)
+            # errD = torch.tensor([0.], dtype=torch.float32,device=device)
 
             if epoch >= -1:
                 # print(f"epoch: {epoch}, update D")
@@ -594,23 +460,22 @@ def train(rank, gpu, args):
 
                 
                 #sample t TODO 这里注意sample的t应该和a-bridge中的一样记得加判断
-                t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
+                # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
                 # t_menus_1 = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
+                t = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
 
                 # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
-                x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
-            
+                # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
                 # x_t_menus_1, x_t = q_sample_pairs_for_BBDM(real_x, t_menus_1, real_y, args.num_timesteps)
+                x_t, x_tp1  = q_sample_pairs_for_BBDM(real_x, t, real_y, args.num_timesteps)
 
                 # TODO 这里为什么要？：因为xt在后面座位输入放到了D中
-                # x_t_menus_1.requires_grad = True
                 x_t.requires_grad = True
+                # x_t.requires_grad = True
                 
-        
                 # train with real
                 # TODO 研究一下具体怎么计算的
                 D_real = netD(x_t, t, x_tp1.detach()).view(-1)
-
                 # D_real = netD(x_t_menus_1, t_menus_1, x_t.detach()).view(-1)
                 
                 errD_real = F.softplus(-D_real)
@@ -671,12 +536,13 @@ def train(rank, gpu, args):
                 # print(real_y[0])
                 # print(latent_z[0])
                 # print("===============")
-                x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+                # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
                 # fake_x_t_menus_1 = sample_posterior_BBDM(x_0_predict, x_t, real_y, t_menus_1 + 1, args.num_timesteps)
+                x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_y, t + 1, args.num_timesteps)
                 # if torch.isnan(fake_x_t_menus_1).any():
                 #     print("NaN detected in sample_posterior_BBDM")
-                # output = netD(fake_x_t_menus_1, t, x_t.detach()).view(-1)
-                output = netD(x_pos_sample, t, x_t.detach()).view(-1)
+                output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
+                # output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
                 # if torch.isnan(output).any():
                 #     print("NaN detected in D")   
                 
@@ -687,7 +553,7 @@ def train(rank, gpu, args):
         
                 
                 errD = errD_real + errD_fake
-                torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
+                # torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
                 # Update D
                 optimizerD.step()
 
@@ -703,12 +569,13 @@ def train(rank, gpu, args):
             
             
             # t_menus_1 = torch.randint(0, 3, (real_x.size(0),), device=device)
-            t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
+            # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
             # t_menus_1 = torch.randint(0, args.num_timesteps - 1, (real_x.size(0),), device=device)
+            t = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
             
-            
-            x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
+            # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
             # x_t_menus_1, x_t = q_sample_pairs_for_BBDM(real_x, t_menus_1, real_y, args.num_timesteps)
+            x_t, x_tp1  = q_sample_pairs_for_BBDM(real_x, t, real_y, args.num_timesteps)
             assert not torch.isnan(t).any(), "NaN detected in t_menus_1"
             assert not torch.isnan(x_t).any(), "NaN detected in x_t: {x_t}"
             
@@ -719,27 +586,20 @@ def train(rank, gpu, args):
            
             # x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y.detach())
             x_0_predict = netG(x_tp1.detach(), t, latent_z, real_y)
-            x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+            # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+            x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_y, t + 1, args.num_timesteps)
             # fake_x_t_menus_1 = sample_posterior_BBDM(x_0_predict, x_t, real_y, t_menus_1 + 1,  args.num_timesteps)
             # assert not torch.isnan(fake_x_t_menus_1).any(), "NaN detected in x_pos_sample"
 
                                                         
             # output = netD(fake_x_t_menus_1, t_menus_1, x_t.detach()).view(-1)
-            output = netD(x_pos_sample, t, x_t.detach()).view(-1)
-            # print(f"netD output: {output}")
+            output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
             
             errG = F.softplus(-output)
-            # print(f"Softplus output: {errG}")
             errG = errG.mean()
             assert not torch.isnan(errG).any(), "NaN detected in generator loss value"
 
-            # print(f"Loss value before backward: {errG.item()}")
-            torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
-            errG.backward()
-
-
-                    
-            torch.nn.utils.clip_grad_norm_(netG.parameters(), max_norm=1.0)
+            errG.backward()                  
             optimizerG.step()
             
             global_step += 1
@@ -754,32 +614,26 @@ def train(rank, gpu, args):
         
         if rank == 0:
             if epoch % 10 == 0:
-                torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'fake_x_t_menus_1_epoch_{}.png'.format(epoch)), normalize=True)
-                torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_reconstr_epoch{}.png'.format(epoch)), normalize=True)
-                x_t_1 = torch.randn_like(real_x)
+                # torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'fake_x_t_menus_1_epoch_{}.png'.format(epoch)), normalize=True)
+                # torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_reconstr_epoch{}.png'.format(epoch)), normalize=True)
+                # x_t_1 = torch.randn_like(real_x)
                 x_T = real_y
                 gt = real_x 
-                fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
-                # fake_sample, steps_flattened = sample_from_model_BBDM(netG, args.num_timesteps, x_T, args, real_y)
+                # fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
+                fake_sample, steps_flattened = sample_from_model_BBDM(netG, args.num_timesteps, x_T, args, real_y)
+                # fake_sample, steps_flattened = sample_from_model_BBDM(netG, args.num_timesteps, x_t_1, args, x_t_1)
                 torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'fake_sample_epoch_{}.png'.format(epoch)), normalize=True)
                 # t_menus_1 = torch.randint(0, 1, (real_x.size(0),), device=device)
-                t = torch.randint(0, 1, (real_x.size(0),), device=device)
-                x_0_predict_with_t_menus_1_0 = netG(x_t.detach(), t, latent_z, real_y.detach())
-                torchvision.utils.save_image(x_0_predict_with_t_menus_1_0, os.path.join(exp_path, 'x_0_predict_with_t_0_epoch{}.png'.format(epoch)), normalize=True)
+                real_test_x = real_x[:1]
+                real_test_y = real_y[:1]
+                for i in range(0, args.num_timesteps - 1):
+                    t = torch.full((real_test_x.size(0),), i, device=device)
+                    x_t, x_tp1 = q_sample_pairs_for_BBDM(real_test_x, t, real_test_y, args.num_timesteps)  
+                    latent_z = torch.randn(real_test_x.size(0), nz,device=device)                 
+                    x_0_predict = netG(x_tp1.detach(), t, latent_z)
+                    resut = torch.cat([real_test_x, real_test_y, x_t, x_tp1, x_0_predict])
+                    torchvision.utils.save_image(resut, os.path.join(exp_path, 'xresultt_t_{}_epoch{}.png'.format(i, epoch)), normalize=True)
 
-                # t_menus_1 = torch.randint(1, 2, (real_x.size(0),), device=device)
-                t = torch.randint(1, 2, (real_x.size(0),), device=device)
-                x_0_predict_with_t_menus_1_1 = netG(x_t.detach(), t, latent_z, real_y.detach())
-                torchvision.utils.save_image(x_0_predict_with_t_menus_1_1, os.path.join(exp_path, 'x_0_predict_with_t_1_epoch{}.png'.format(epoch)), normalize=True)
-
-                # t_menus_1 = torch.randint(2, 3, (real_x.size(0),), device=device)
-                t = torch.randint(2, 3, (real_x.size(0),), device=device)
-                x_0_predict_with_t_menus_1_2 = netG(x_t.detach(), t, latent_z, real_y.detach())
-                torchvision.utils.save_image(x_0_predict_with_t_menus_1_2, os.path.join(exp_path, 'x_0_predict_with_t_2_epoch{}.png'.format(epoch)), normalize=True)
-
-                # torchvision.utils.save_image(x_T, os.path.join(exp_path, 'input_epoch_{}.png'.format(epoch)), normalize=True)
-                # torchvision.utils.save_image(gt, os.path.join(exp_path, 'gt_epoch_{}.png'.format(epoch)), normalize=True)
-   
             # torchvision.utils.save_image(steps_flattened, os.path.join(exp_path, 'steps_flattened_{}.png'.format(epoch)), normalize=True)
             if args.save_content:
                 if epoch % args.save_content_every == 0:
