@@ -62,12 +62,18 @@ class Edge2Shoes(data.Dataset):
         self.image_paths = self.image_paths[:2000]
 
         # initialize transforms
-        transforms_list: list[Callable[..., tuple[Any, Any]]] = [transforms.RandomHorizontalFlip(p=0)] if split == Edge2ShoesSplit.TRAIN else []
-        transforms_list.extend([
-            transforms.Resize(self.image_size),
-            transforms.ToTensor(),
-        ])
-        self.transform = transforms.Compose(transforms_list)
+        # transforms_list: list[Callable[..., tuple[Any, Any]]] = [transforms.RandomHorizontalFlip(p=0)] if split == Edge2ShoesSplit.TRAIN else []
+        # transforms_list.extend([
+        #     transforms.Resize(self.image_size),
+        #     transforms.ToTensor(),
+        # ])
+        # self.transform = transforms.Compose(transforms_list)
+        self.transform = transforms.Compose([
+                transforms.Resize(self.image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
+            ])
 
     @property
     def unbatched_len(self) -> int:

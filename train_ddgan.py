@@ -125,7 +125,7 @@ def q_sample_pairs(coeff, x_start, t):
     
     return x_t, x_t_plus_one
 
-def q_sample_BBDM(x_start, y, t, T, noise=None):
+def q_sample_BBDM(x_start, y, t, T):
     t = t.unsqueeze(1).unsqueeze(2).unsqueeze(3)
     m_t = t / T
     delta_t = 2 * (m_t - m_t ** 2)
@@ -211,7 +211,7 @@ def sample_posterior_BBDM(x_0,x_t, y, t, T):
         m_t_minus_one = m_t_minus_one.unsqueeze(1).unsqueeze(2).unsqueeze(3)
 
         # delta_t and delta_t_minus_one
-        delta_t = 2 * (m_t - m_t ** 2)
+        delta_t = 2 * (m_t - m_t ** 2) + 1e-10
         delta_t_minus_one = 2 * (m_t_minus_one - m_t_minus_one ** 2)
         delta_t_by_t_minus_one = delta_t - delta_t_minus_one * ((1 - m_t) ** 2) / ((1 - m_t_minus_one) ** 2)
         tilde_delta_t = delta_t_by_t_minus_one * delta_t_minus_one / delta_t
@@ -237,7 +237,7 @@ def sample_posterior_BBDM(x_0,x_t, y, t, T):
         
         nonzero_mask = (1 - (t == 1).type(torch.float32))
 
-        return mean + nonzero_mask[:,None,None,None] * 0.5 ** var * noise
+        return mean + nonzero_mask[:,None,None,None] * (var ** 0.5) * noise
             
     sample_x_pos = p_sample_BBDM(x_0, x_t, t, y, T)
     
@@ -268,7 +268,7 @@ def sample_from_model_BBDM(generator, n_time, x_init, opt, y):
     x = x_init
     x_steps = [x.clone()]
     with torch.no_grad():
-        for i in reversed(range(1 , n_time)):
+        for i in reversed(range(1 , n_time + 1)):
             t = torch.full((x.size(0),), i, dtype=torch.int64).to(x.device)
             t_time = t
             latent_z = torch.randn(x.size(0), opt.nz, device=x.device)
@@ -277,13 +277,7 @@ def sample_from_model_BBDM(generator, n_time, x_init, opt, y):
             x = x_new.detach()
             x_steps.append(x.clone())
 
-    batch_size = x_init.size(0)
-    steps_tensor = torch.stack(x_steps)  # 将列表转换为tensor
-    steps_tensor = steps_tensor.permute(1, 0, 2, 3, 4)  # 调整维度顺序: (batch_size, n_time, C, H, W)
-
-    # 将每个样本的所有步骤展开为一行
-    steps_flattened = steps_tensor.reshape(batch_size, -1, steps_tensor.size(3), steps_tensor.size(4))
-    return x, steps_flattened
+    return x
 
 #%%
 def train(rank, gpu, args):
@@ -433,144 +427,95 @@ def train(rank, gpu, args):
     for epoch in range(init_epoch, args.num_epoch+1):
         train_sampler.set_epoch(epoch)
 
-        # for name, param in netG.named_parameters():
-        #     if param.grad is not None:
-        #         # print(f"Generator gradient {name}: {param.grad.norm()}")
-        #         print(f"Generator gradient {name}: {param.grad.norm()} iteration: {iteration}")
-
         for iteration, (x, y) in enumerate(data_loader):
             for p in netD.parameters():  
                 p.requires_grad = True  
 
             assert not torch.isnan(x).any(), "NaN detected in input data"
             assert not torch.isnan(y).any(), "NaN detected in target data"
+            #sample from p(x_0)
             real_x = x.to(device, non_blocking=True)
             real_y = y.to(device, non_blocking=True)
             starting_index = 0
 
-            # 初始化 避免resume的时候errD没有被计算
-            # errD = torch.tensor([0.], dtype=torch.float32,device=device)
+            netD.zero_grad()
 
-            if epoch >= -1:
-                # print(f"epoch: {epoch}, update D")
-            # 新的循环，梯度清零
-                netD.zero_grad()
-                
-                #sample from p(x_0)
+            # TODO 这里可以试一下用args.num_timesteps
+            t = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device)
 
-                
-                #sample t TODO 这里注意sample的t应该和a-bridge中的一样记得加判断
-                # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
-                # t_menus_1 = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
-                t = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
+            # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
+            x_t, x_tp1  = q_sample_pairs_for_BBDM(real_x, t, real_y, args.num_timesteps)
+            assert not torch.isnan(x_t).any(), "NaN detected in x_t"
+            assert not torch.isnan(x_tp1).any(), "NaN detected in x_tp1"
+            x_t.requires_grad = True
 
-                # 这里采样得到 x_t 和 x_t+1 TODO 这里替换成A-bridge
-                # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
-                # x_t_menus_1, x_t = q_sample_pairs_for_BBDM(real_x, t_menus_1, real_y, args.num_timesteps)
-                x_t, x_tp1  = q_sample_pairs_for_BBDM(real_x, t, real_y, args.num_timesteps)
-
-                # TODO 这里为什么要？：因为xt在后面座位输入放到了D中
-                x_t.requires_grad = True
-                # x_t.requires_grad = True
+            # train with real
+            # TODO 研究一下具体怎么计算的
+            D_real = netD(x_t, t, x_tp1.detach()).view(-1)
+            
+            errD_real = F.softplus(-D_real)
+            errD_real = errD_real.mean()
+            assert not torch.isnan(errD_real).any(), "NaN detected in discriminator real loss value"
+            errD_real.backward(retain_graph=True)
+            
+            
+            # TODO lazy_reg?
+            if args.lazy_reg is None:
+                grad_real = torch.autograd.grad(
+                            outputs=D_real.sum(), inputs=x_t, create_graph=True
+                            )[0]
+                grad_penalty = (
+                                grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
+                                ).mean()
                 
-                # train with real
-                # TODO 研究一下具体怎么计算的
-                D_real = netD(x_t, t, x_tp1.detach()).view(-1)
-                # D_real = netD(x_t_menus_1, t_menus_1, x_t.detach()).view(-1)
                 
-                errD_real = F.softplus(-D_real)
-                errD_real = errD_real.mean()
-                assert not torch.isnan(errD_real).any(), "NaN detected in discriminator real loss value"
-                errD_real.backward(retain_graph=True)
-                
-                
-                # TODO lazy_reg?
-                if args.lazy_reg is None:
+                grad_penalty = args.r1_gamma / 2 * grad_penalty
+                grad_penalty.backward()
+            else:
+                if global_step % args.lazy_reg == 0:
                     grad_real = torch.autograd.grad(
-                                outputs=D_real.sum(), inputs=x_t, create_graph=True
-                                )[0]
+                            outputs=D_real.sum(), inputs=x_t, create_graph=True
+                            )[0]
                     grad_penalty = (
-                                    grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
-                                    ).mean()
-                    
-                    
+                                grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
+                                ).mean()
+                
+                
                     grad_penalty = args.r1_gamma / 2 * grad_penalty
                     grad_penalty.backward()
-                else:
-                    if global_step % args.lazy_reg == 0:
-                        grad_real = torch.autograd.grad(
-                                outputs=D_real.sum(), inputs=x_t, create_graph=True
-                                )[0]
-                        grad_penalty = (
-                                    grad_real.view(grad_real.size(0), -1).norm(2, dim=1) ** 2
-                                    ).mean()
-                    
-                    
-                        grad_penalty = args.r1_gamma / 2 * grad_penalty
-                        grad_penalty.backward()
 
-                # train with fake
-                latent_z = torch.randn(batch_size, nz, device=device)
-            
-                # 从 x_t+1 还原到 x_0'
-                # print(x_t)
-                assert not torch.isnan(x_t).any(), "NaN detected in real_data"
-                assert not torch.isnan(real_y).any(), "NaN detected in fake_data"
-
-                # x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y)
-                x_0_predict = netG(x_tp1.detach(), t, latent_z, real_y)
-                if torch.isnan(x_0_predict).any():
-                    print("NaN detected in Generator output")
-                    print(f"iteration: {iteration}")
-
-                # for name, param in netG.named_parameters():
-                #     if param.grad is not None:
-                #         print(f"Generator gradient {name}: {param.grad.norm()}")
-            
-                # for name, param in netG.named_parameters():
-                #     if torch.isnan(param).any():
-                #         print(f"NaN detected in Generator parameter {name}")    
-                # print(x_0_predict[0])
-                # print(x_t[0])
-                # print(t_menus_1[0])
-                # print(real_y[0])
-                # print(latent_z[0])
-                # print("===============")
-                # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
-                # fake_x_t_menus_1 = sample_posterior_BBDM(x_0_predict, x_t, real_y, t_menus_1 + 1, args.num_timesteps)
-                x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_y, t + 1, args.num_timesteps)
-                # if torch.isnan(fake_x_t_menus_1).any():
-                #     print("NaN detected in sample_posterior_BBDM")
-                output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
-                # output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
-                # if torch.isnan(output).any():
-                #     print("NaN detected in D")   
-                
-                errD_fake = F.softplus(output)
-                errD_fake = errD_fake.mean()
-                assert not torch.isnan(errD_fake).any(), "NaN detected in discriminator fake loss value"
-                errD_fake.backward()
+            # train with fake
+            latent_z = torch.randn(batch_size, nz, device=device)
         
-                
-                errD = errD_real + errD_fake
-                # torch.nn.utils.clip_grad_norm_(netD.parameters(), max_norm=1.0)
-                # Update D
-                optimizerD.step()
+            # 从 x_t+1 还原到 x_0'
+            assert not torch.isnan(x_t).any(), "NaN detected in real_data"
+            assert not torch.isnan(real_y).any(), "NaN detected in fake_data"
 
-            # for name, param in netD.named_parameters():
-            #     if param.grad is not None:
-            #         # print(f"Generator gradient {name}: {param.grad.norm()}")
-            #         print(f"D gradient {name}  update: {param.grad.norm()} iteration: {iteration}, epoch: {epoch}")            
+            x_0_predict = netG(x_tp1.detach(), t, latent_z)
+            # TODO 不行这里就改一下蒙一下用t而不是t+1 
+            # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
+
+            # 只接受 1,2,3
+            x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_y, t + 1, args.num_timesteps)
+            assert not torch.isnan(x_pos_sample).any(), "NaN detected in x_pos_sample"
+            # TODO 或者下面用t+1
+            output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
+            
+            errD_fake = F.softplus(output)
+            errD_fake = errD_fake.mean()
+            assert not torch.isnan(errD_fake).any(), "NaN detected in discriminator fake loss value"
+            errD_fake.backward()
+    
+            
+            errD = errD_real + errD_fake
+            # Update D
+            optimizerD.step()      
         
             #update G
             for p in netD.parameters():
                 p.requires_grad = False
             netG.zero_grad()
             
-            
-            # t_menus_1 = torch.randint(0, 3, (real_x.size(0),), device=device)
-            # t = torch.randint(0, args.num_timesteps, (real_x.size(0),), device=device)
-            # t_menus_1 = torch.randint(0, args.num_timesteps - 1, (real_x.size(0),), device=device)
             t = torch.randint(starting_index, args.num_timesteps - 1, (real_x.size(0),), device=device).long()
             
             # x_t, x_tp1 = q_sample_pairs(coeff, real_x, t)
@@ -581,18 +526,10 @@ def train(rank, gpu, args):
             
             latent_z = torch.randn(batch_size, nz,device=device)
             
-            
-                
-           
-            # x_0_predict = netG(x_t.detach(), t_menus_1, latent_z, real_y.detach())
-            x_0_predict = netG(x_tp1.detach(), t, latent_z, real_y)
+            x_0_predict = netG(x_tp1.detach(), t, latent_z)
             # x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t)
             x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_y, t + 1, args.num_timesteps)
-            # fake_x_t_menus_1 = sample_posterior_BBDM(x_0_predict, x_t, real_y, t_menus_1 + 1,  args.num_timesteps)
-            # assert not torch.isnan(fake_x_t_menus_1).any(), "NaN detected in x_pos_sample"
-
-                                                        
-            # output = netD(fake_x_t_menus_1, t_menus_1, x_t.detach()).view(-1)
+                              
             output = netD(x_pos_sample, t, x_tp1.detach()).view(-1)
             
             errG = F.softplus(-output)
@@ -614,24 +551,25 @@ def train(rank, gpu, args):
         
         if rank == 0:
             if epoch % 10 == 0:
-                # torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'fake_x_t_menus_1_epoch_{}.png'.format(epoch)), normalize=True)
-                # torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_reconstr_epoch{}.png'.format(epoch)), normalize=True)
+                torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'fake_x_t_epoch_{}.png'.format(epoch)), normalize=True)
+                torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_reconstr_epoch{}.png'.format(epoch)), normalize=True)
                 # x_t_1 = torch.randn_like(real_x)
                 x_T = real_y
                 gt = real_x 
                 # fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
-                fake_sample, steps_flattened = sample_from_model_BBDM(netG, args.num_timesteps, x_T, args, real_y)
+                fake_sample = sample_from_model_BBDM(netG, args.num_timesteps, x_T, args, real_y)
                 # fake_sample, steps_flattened = sample_from_model_BBDM(netG, args.num_timesteps, x_t_1, args, x_t_1)
                 torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'fake_sample_epoch_{}.png'.format(epoch)), normalize=True)
                 # t_menus_1 = torch.randint(0, 1, (real_x.size(0),), device=device)
                 real_test_x = real_x[:1]
                 real_test_y = real_y[:1]
-                for i in range(0, args.num_timesteps - 1):
+                for i in range(starting_index, args.num_timesteps - 1):
                     t = torch.full((real_test_x.size(0),), i, device=device)
                     x_t, x_tp1 = q_sample_pairs_for_BBDM(real_test_x, t, real_test_y, args.num_timesteps)  
                     latent_z = torch.randn(real_test_x.size(0), nz,device=device)                 
                     x_0_predict = netG(x_tp1.detach(), t, latent_z)
-                    resut = torch.cat([real_test_x, real_test_y, x_t, x_tp1, x_0_predict])
+                    x_pos_sample = sample_posterior_BBDM(x_0_predict, x_tp1, real_test_y, t + 1, args.num_timesteps)
+                    resut = torch.cat([real_test_x, real_test_y, x_t, x_tp1, x_0_predict, x_pos_sample])
                     torchvision.utils.save_image(resut, os.path.join(exp_path, 'xresultt_t_{}_epoch{}.png'.format(i, epoch)), normalize=True)
 
             # torchvision.utils.save_image(steps_flattened, os.path.join(exp_path, 'steps_flattened_{}.png'.format(epoch)), normalize=True)
