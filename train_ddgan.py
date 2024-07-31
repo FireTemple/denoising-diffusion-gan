@@ -297,17 +297,18 @@ def weights_init(m):
 
 def sample_from_model(coefficients, generator, n_time, x_init, T, opt):
     x = x_init
+    x_steps = [x[0].clone()]
     with torch.no_grad():
         for i in reversed(range(n_time)):
             t = torch.full((x.size(0),), i, dtype=torch.int64).to(x.device)
-          
             t_time = t
             latent_z = torch.randn(x.size(0), opt.nz, device=x.device)
             x_0 = generator(x, t_time, latent_z)
             x_new = sample_posterior(coefficients, x_0, x, t)
             x = x_new.detach()
-        
-    return x
+            x_steps.append(torch.clamp((x[0].clone()), 0, 1))
+    x_steps.append(x[0].clone())        
+    return x, x_steps
 
 def sample_from_model_A_bridge(generator, n_time, x_init, opt, y):
     x = x_init
@@ -453,7 +454,10 @@ def train(rank, gpu, args):
     
     
     coeff = Diffusion_Coefficients(args, device)
+    print(coeff)
     pos_coeff = Posterior_Coefficients(args, device)
+    print("=================")
+    print(pos_coeff)
     T = get_time_schedule(args, device)
     
     if args.resume:
@@ -620,10 +624,16 @@ def train(rank, gpu, args):
             if epoch % 10 == 0:
                 torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'xpos_epoch_{}.png'.format(epoch)), normalize=True)
                 torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_predict_epoch_{}.png'.format(epoch)), normalize=True)
+                x_pos_sample_real = sample_posterior(pos_coeff, real_data, x_tp1, t)
+                torchvision.utils.save_image(x_pos_sample_real, os.path.join(exp_path, 'x_pos_sample_real_{}.png'.format(epoch)), normalize=True)
+                torchvision.utils.save_image(x_0_predict, os.path.join(exp_path, 'x_0_predict_epoch_{}.png'.format(epoch)), normalize=True)
+
+            x_t_1 = torch.randn_like(real_data[:1])
             
-            x_t_1 = torch.randn_like(real_data)
-            fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
-            torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)), normalize=True)
+            fake_sample, x_steps = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args)
+            steps = torch.cat(x_steps, dim=2)
+            torchvision.utils.save_image(steps, os.path.join(exp_path, 'steps_{}.png'.format(epoch)), normalize=True)
+            torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'fake_sample_epoch_{}.png'.format(epoch)), normalize=True)
             
             if args.save_content:
                 if epoch % args.save_content_every == 0:
