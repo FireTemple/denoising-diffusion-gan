@@ -185,7 +185,7 @@ class NCSNpp(nn.Module):
     # Downsampling block
 
     # TODO 这里修改为两倍，因为cat了  
-    channels = config.num_channels * 2 # 3 * 2
+    channels = config.num_channels # 3 * 2
     if progressive_input != 'none':
       input_pyramid_ch = channels
 
@@ -302,8 +302,6 @@ class NCSNpp(nn.Module):
 
   def forward(self, x, time_cond, z, y = None):
     # timestep/noise_level embedding; only for continuous training
-    if y is not None:
-      x = torch.cat([x, y], dim=1)
       
     zemb = self.z_transform(z)
     modules = self.all_modules
